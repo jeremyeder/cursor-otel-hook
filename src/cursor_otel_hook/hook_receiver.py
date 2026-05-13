@@ -564,6 +564,18 @@ class CursorHookProcessor:
             span.set_attribute(
                 "langsmith.metadata.workspace_roots", json.dumps(workspace_roots)
             )
+            # Detect TAILWIND plugin from workspace path
+            tailwind_plugins = {
+                "tailwind-pm": "tailwind-pm",
+                "tailwind-pmm": "tailwind-pmm",
+                "tailwind-tmm": "tailwind-tmm",
+                "tailwind-domain0": "tailwind-core",
+            }
+            for root in workspace_roots:
+                for path_fragment, plugin_name in tailwind_plugins.items():
+                    if path_fragment in root:
+                        span.set_attribute("tailwind.plugin", plugin_name)
+                        break
 
         # Store hook event type
         if "hook_event_name" in hook_data:
@@ -596,11 +608,20 @@ class CursorHookProcessor:
 
         # Tool use events (GenAI convention)
         elif event in ["preToolUse", "postToolUse", "postToolUseFailure"]:
-            if "tool_name" in hook_data:
-                span.set_attribute("gen_ai.tool.name", hook_data["tool_name"])
+            tool_name = hook_data.get("tool_name", "")
+            tool_input = hook_data.get("tool_input", {})
 
-            if "tool_input" in hook_data:
-                tool_input = hook_data["tool_input"]
+            # Extract skill name when the Skill tool is invoked
+            if tool_name == "Skill" and isinstance(tool_input, dict):
+                skill_name = tool_input.get("skill", "unknown")
+                span.set_attribute("tailwind.skill.name", skill_name)
+                span.set_attribute("gen_ai.tool.name", f"Skill:{skill_name}")
+                if "args" in tool_input and tool_input["args"]:
+                    span.set_attribute("tailwind.skill.args", str(tool_input["args"]))
+            elif tool_name:
+                span.set_attribute("gen_ai.tool.name", tool_name)
+
+            if tool_input:
                 # Store as invocation parameters
                 span.set_attribute(
                     "langsmith.metadata.tool_input", json.dumps(tool_input)
