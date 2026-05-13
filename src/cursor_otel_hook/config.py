@@ -18,14 +18,14 @@ class OTELConfig:
     service_name: str
     insecure: bool = False
     headers: Optional[dict] = None
-    mask_prompts: bool = False
+    mask_prompts: bool = True
     timeout: int = 30
-    protocol: str = "grpc"  # "grpc", "http/protobuf", or "http/json"
+    protocol: str = "http/json"  # "grpc", "http/protobuf", or "http/json"
 
     @classmethod
     def from_env(cls) -> "OTELConfig":
         """Load configuration from environment variables"""
-        protocol = os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc").lower()
+        protocol = os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json").lower()
 
         # Normalize protocol values - keep http/json and http/protobuf distinct
         if protocol == "http":
@@ -34,11 +34,11 @@ class OTELConfig:
             protocol = "grpc"  # Default to grpc for unknown values
 
         return cls(
-            endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
-            service_name=os.getenv("OTEL_SERVICE_NAME", "cursor-agent"),
+            endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"),
+            service_name=os.getenv("OTEL_SERVICE_NAME", "tailwind-cursor"),
             insecure=os.getenv("OTEL_EXPORTER_OTLP_INSECURE", "true").lower() == "true",
             headers=cls._parse_headers(os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "")),
-            mask_prompts=os.getenv("CURSOR_OTEL_MASK_PROMPTS", "false").lower()
+            mask_prompts=os.getenv("CURSOR_OTEL_MASK_PROMPTS", "true").lower()
             == "true",
             timeout=int(os.getenv("OTEL_EXPORTER_OTLP_TIMEOUT", "30")),
             protocol=protocol,
@@ -61,15 +61,15 @@ class OTELConfig:
         logger.debug(f"Raw config file data: {data}")
 
         # Support standard OTEL environment variable names in JSON
-        endpoint = data.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
-        service_name = data.get("OTEL_SERVICE_NAME", "cursor-agent")
-        protocol = data.get("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc").lower()
+        endpoint = data.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+        service_name = data.get("OTEL_SERVICE_NAME", "tailwind-cursor")
+        protocol = data.get("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json").lower()
         insecure = (
             str(data.get("OTEL_EXPORTER_OTLP_INSECURE", "true")).lower() == "true"
         )
         headers = data.get("OTEL_EXPORTER_OTLP_HEADERS")
         mask_prompts = (
-            str(data.get("CURSOR_OTEL_MASK_PROMPTS", "false")).lower() == "true"
+            str(data.get("CURSOR_OTEL_MASK_PROMPTS", "true")).lower() == "true"
         )
         timeout = int(data.get("OTEL_EXPORTER_OTLP_TIMEOUT", "30"))
 
