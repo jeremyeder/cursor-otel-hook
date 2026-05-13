@@ -51,3 +51,4 @@ cursor_otel_hook.log
 CLAUDE.MD
 otel_config.json
 otel_config_http.example.json
+*.json

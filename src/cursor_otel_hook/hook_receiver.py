@@ -279,19 +279,7 @@ class CursorHookProcessor:
         gen_id_display = generation_id[:16] if generation_id != "unknown" else "unknown"
         logger.info(f"Processing: event={hook_event}, generation={gen_id_display}...")
 
-        # Check if this is a 'stop' event - if so, flush the generation
-        if hook_event == "stop" and generation_id != "unknown":
-            logger.info(
-                f"Stop event detected for generation {generation_id}, flushing spans"
-            )
-            if self.span_processor and hasattr(self.span_processor, "flush_generation"):
-                self.span_processor.flush_generation(
-                    generation_id, self.config.service_name
-                )
-            # Cleanup context after flushing
-            if self.context_manager:
-                self.context_manager.cleanup_context(generation_id)
-            # Note: We still create a span for the stop event itself
+        is_stop_event = hook_event == "stop" and generation_id != "unknown"
 
         # Create span name based on hook event
         span_name = f"cursor.{hook_event}"
@@ -322,6 +310,7 @@ class CursorHookProcessor:
             f"Created span: {span_name} (generation: {gen_id_display}, trace: {trace_id_prefix}...)"
         )
 
+        response = {}
         with span:
             try:
                 # Add common attributes
@@ -341,8 +330,6 @@ class CursorHookProcessor:
 
                 # Set status as OK
                 span.set_status(Status(StatusCode.OK))
-
-                return response
 
             except Exception as e:
                 # Record exception in span
@@ -378,6 +365,20 @@ class CursorHookProcessor:
                             trace_id=ctx.trace_id,
                             span_id=ctx.span_id,
                         )
+
+        # Flush AFTER the span has ended so the stop span is included in the batch
+        if is_stop_event:
+            logger.info(
+                f"Stop event detected for generation {generation_id}, flushing spans"
+            )
+            if self.span_processor and hasattr(self.span_processor, "flush_generation"):
+                self.span_processor.flush_generation(
+                    generation_id, self.config.service_name
+                )
+            if self.context_manager:
+                self.context_manager.cleanup_context(generation_id)
+
+        return response
 
     def _create_span_with_context(
         self,
@@ -908,6 +909,11 @@ Examples:
 
         # Output response as JSON
         print(json.dumps(response))
+
+        # Force flush any pending spans before exit
+        provider = trace.get_tracer_provider()
+        if hasattr(provider, "force_flush"):
+            provider.force_flush(timeout_millis=5000)
 
         logger.info("Hook execution completed successfully")
         logger.info("=" * 60)
