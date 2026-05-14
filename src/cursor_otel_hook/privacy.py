@@ -19,8 +19,6 @@ def mask_sensitive_data(data: Dict[str, Any]) -> Dict[str, Any]:
         "prompt",
         "user_message",
         "agent_message",
-        "tool_input",
-        "tool_output",
         "mcp_input",
         "command",
         "file_path",
