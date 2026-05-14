@@ -105,8 +105,8 @@ class OTELConfig:
     def load(cls, config_file: Optional[str] = None) -> "OTELConfig":
         """
         Load configuration with precedence:
-        1. Config file (if provided)
-        2. Environment variables
+        1. Config file as base (if provided)
+        2. Environment variables override individual fields
         """
         if config_file:
             try:
@@ -122,6 +122,9 @@ class OTELConfig:
         else:
             config = cls.from_env()
 
+        # Env vars override config file values when explicitly set
+        cls._apply_env_overrides(config)
+
         if not cls._is_valid_endpoint(config.endpoint):
             logger.warning(f"Endpoint URL may be malformed: {config.endpoint}")
 
@@ -132,6 +135,38 @@ class OTELConfig:
         logger.info(f"Auth headers configured: {bool(config.headers)}")
 
         return config
+
+    @classmethod
+    def _apply_env_overrides(cls, config: "OTELConfig") -> None:
+        """Override config fields with env vars when explicitly set."""
+        if "OTEL_EXPORTER_OTLP_ENDPOINT" in os.environ:
+            config.endpoint = os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"]
+            logger.info(f"Env override: endpoint={config.endpoint}")
+
+        if "OTEL_SERVICE_NAME" in os.environ:
+            config.service_name = os.environ["OTEL_SERVICE_NAME"]
+
+        if "OTEL_EXPORTER_OTLP_PROTOCOL" in os.environ:
+            config.protocol = os.environ["OTEL_EXPORTER_OTLP_PROTOCOL"].lower()
+
+        if "OTEL_EXPORTER_OTLP_INSECURE" in os.environ:
+            config.insecure = os.environ["OTEL_EXPORTER_OTLP_INSECURE"].lower() == "true"
+
+        if "CURSOR_OTEL_MASK_PROMPTS" in os.environ:
+            config.mask_prompts = os.environ["CURSOR_OTEL_MASK_PROMPTS"].lower() == "true"
+
+        if "OTEL_EXPORTER_OTLP_TIMEOUT" in os.environ:
+            config.timeout = int(os.environ["OTEL_EXPORTER_OTLP_TIMEOUT"])
+
+        # Headers: merge env var headers INTO config file headers
+        if "OTEL_EXPORTER_OTLP_HEADERS" in os.environ:
+            env_headers = cls._parse_headers(os.environ["OTEL_EXPORTER_OTLP_HEADERS"])
+            if env_headers:
+                if config.headers:
+                    config.headers.update(env_headers)
+                else:
+                    config.headers = env_headers
+                logger.info(f"Env override: merged headers {list(env_headers.keys())}")
 
     @staticmethod
     def _is_valid_endpoint(endpoint: str) -> bool:

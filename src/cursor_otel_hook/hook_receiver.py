@@ -211,10 +211,11 @@ class CursorHookProcessor:
             )
 
             logger.info("Using HTTP OTLP exporter (protobuf format)")
-            # HTTP exporter uses protobuf by default
-            # The endpoint should include /v1/traces for OTLP HTTP
-            # Note: HTTP exporter doesn't use 'insecure' parameter
-            # Instead, use http:// or https:// in the endpoint URL
+            endpoint = self.config.endpoint
+            if not endpoint.endswith("/v1/traces"):
+                endpoint = endpoint.rstrip("/") + "/v1/traces"
+                logger.info(f"Appended '/v1/traces' to endpoint: {endpoint}")
+            exporter_kwargs["endpoint"] = endpoint
         else:
             # Default to gRPC
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
