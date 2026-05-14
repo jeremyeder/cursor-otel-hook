@@ -1,236 +1,152 @@
 #!/bin/bash
-# Setup script for cursor-otel-hook (macOS/Linux)
+# Setup script for cursor-otel-hook (TAILWIND fork)
+#
+# Installs the hook, configures it to send traces directly to MLflow
+# on the jeder-evalhub ROSA cluster. Requires:
+#   - oc login to jeder-evalhub cluster
+#   - Python 3.8+ (or uv)
 
 set -e
 
-echo "==================================="
-echo "Cursor OTEL Hook Setup (Unix/macOS)"
-echo "==================================="
-echo ""
-
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Detect OS
-OS_TYPE="$(uname -s)"
-case "${OS_TYPE}" in
-    Darwin*)    OS="macOS";;
-    Linux*)     OS="Linux";;
-    *)          OS="Unknown";;
-esac
+MLFLOW_ENDPOINT="https://mlflow-direct.apps.rosa.jeder-evalhub.uqi3.p3.openshiftapps.com/v1/traces"
+MLFLOW_WORKSPACE="evalhub"
+MLFLOW_EXPERIMENT_ID="11"
+SERVICE_NAME="tailwind-cursor"
 
-echo "Detected OS: ${OS}"
+echo "========================================="
+echo "TAILWIND Cursor OTEL Hook Setup"
+echo "========================================="
 echo ""
 
-# Check for Python
-if ! command -v python3 &> /dev/null; then
-    echo -e "${RED}Error: Python 3 is not installed${NC}"
-    echo "Please install Python 3.8 or higher"
+# Check prerequisites
+if ! command -v oc &> /dev/null; then
+    echo -e "${RED}Error: oc CLI not found${NC}"
     exit 1
 fi
 
-PYTHON_VERSION=$(python3 --version | cut -d' ' -f2)
-echo -e "${GREEN}✓${NC} Python ${PYTHON_VERSION} found"
+if ! oc whoami &> /dev/null 2>&1; then
+    echo -e "${RED}Error: not logged in to OpenShift. Run: oc login${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓${NC} OpenShift: $(oc whoami)"
 
-# Create virtual environment if it doesn't exist
-if [ ! -d "venv" ]; then
-    echo ""
-    echo "Creating virtual environment..."
-    python3 -m venv venv
-    echo -e "${GREEN}✓${NC} Virtual environment created"
+# Prefer uv, fall back to pip
+if command -v uv &> /dev/null; then
+    PKG_MGR="uv"
+    echo -e "${GREEN}✓${NC} Using uv"
 else
-    echo -e "${GREEN}✓${NC} Virtual environment already exists"
+    if ! command -v python3 &> /dev/null; then
+        echo -e "${RED}Error: Python 3 not found (install uv or python3)${NC}"
+        exit 1
+    fi
+    PKG_MGR="pip"
+    echo -e "${GREEN}✓${NC} Using pip (python $(python3 --version | cut -d' ' -f2))"
 fi
 
-# Activate virtual environment
-source venv/bin/activate
+# Install into venv
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$PROJECT_DIR"
 
-# Upgrade pip
-echo ""
-echo "Upgrading pip..."
-pip install --upgrade pip > /dev/null 2>&1
-echo -e "${GREEN}✓${NC} pip upgraded"
-
-# Install package
-echo ""
-echo "Installing cursor-otel-hook..."
-pip install -e . > /dev/null 2>&1
+if [ "$PKG_MGR" = "uv" ]; then
+    uv venv --quiet 2>/dev/null || true
+    uv pip install -e . --quiet
+    VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"
+else
+    if [ ! -d "venv" ]; then
+        python3 -m venv venv
+    fi
+    source venv/bin/activate
+    pip install --upgrade pip -q
+    pip install -e . -q
+    VENV_PYTHON="$PROJECT_DIR/venv/bin/python"
+fi
 echo -e "${GREEN}✓${NC} Package installed"
 
 # Create hooks directory
 CURSOR_HOOKS_DIR="$HOME/.cursor/hooks"
-if [ ! -d "$CURSOR_HOOKS_DIR" ]; then
-    echo ""
-    echo "Creating Cursor hooks directory..."
-    mkdir -p "$CURSOR_HOOKS_DIR"
-    echo -e "${GREEN}✓${NC} Created $CURSOR_HOOKS_DIR"
-fi
+mkdir -p "$CURSOR_HOOKS_DIR"
 
-# Create config file in Cursor profile directory
+# Create config (no auth token — wrapper injects it at runtime)
 CONFIG_FILE="$CURSOR_HOOKS_DIR/otel_config.json"
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo ""
-    echo "Creating OTEL configuration file..."
-    cat > "$CONFIG_FILE" << 'EOF'
+cat > "$CONFIG_FILE" << EOF
 {
-  "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
-  "OTEL_SERVICE_NAME": "cursor-agent",
-  "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
-  "OTEL_EXPORTER_OTLP_INSECURE": "true",
-  "OTEL_EXPORTER_OTLP_HEADERS": null,
-  "CURSOR_OTEL_MASK_PROMPTS": "false",
-  "OTEL_EXPORTER_OTLP_TIMEOUT": "30"
+  "OTEL_EXPORTER_OTLP_ENDPOINT": "$MLFLOW_ENDPOINT",
+  "OTEL_SERVICE_NAME": "$SERVICE_NAME",
+  "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+  "OTEL_EXPORTER_OTLP_INSECURE": "false",
+  "OTEL_EXPORTER_OTLP_HEADERS": {
+    "x-mlflow-workspace": "$MLFLOW_WORKSPACE",
+    "x-mlflow-experiment-id": "$MLFLOW_EXPERIMENT_ID"
+  },
+  "CURSOR_OTEL_MASK_PROMPTS": "true"
 }
 EOF
-    echo -e "${GREEN}✓${NC} Created $CONFIG_FILE"
-else
-    echo -e "${YELLOW}!${NC} Config already exists at $CONFIG_FILE"
+echo -e "${GREEN}✓${NC} Config: $CONFIG_FILE"
+
+# Create wrapper script that injects OC token at runtime
+WRAPPER_SCRIPT="$CURSOR_HOOKS_DIR/otel_hook.sh"
+cat > "$WRAPPER_SCRIPT" << WRAPPER
+#!/bin/bash
+# TAILWIND Cursor OTEL Hook Wrapper
+# Injects OC bearer token at runtime so traces authenticate to MLflow
+
+# Get fresh OC token (cached by oc CLI, ~24h TTL)
+OC_TOKEN=\$(oc whoami -t 2>/dev/null)
+if [ -z "\$OC_TOKEN" ]; then
+    # Not logged in — skip telemetry silently, don't block Cursor
+    exec cat > /dev/null
 fi
 
-# Create wrapper script
-WRAPPER_SCRIPT="$CURSOR_HOOKS_DIR/otel_hook.sh"
-VENV_PATH="$(pwd)/venv"
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer \$OC_TOKEN,x-mlflow-workspace=$MLFLOW_WORKSPACE,x-mlflow-experiment-id=$MLFLOW_EXPERIMENT_ID"
 
-echo ""
-echo "Creating hook wrapper script..."
-cat > "$WRAPPER_SCRIPT" << EOF
-#!/bin/bash
-# Cursor OTEL Hook Wrapper
-# Auto-generated by setup.sh
-
-# Activate virtual environment
-source "$VENV_PATH/bin/activate"
-
-# Run the hook with config file
-exec python -m cursor_otel_hook --config "$CONFIG_FILE" "\$@"
-EOF
+exec "$VENV_PYTHON" -m cursor_otel_hook --config "$CONFIG_FILE" "\$@"
+WRAPPER
 
 chmod +x "$WRAPPER_SCRIPT"
-echo -e "${GREEN}✓${NC} Created $WRAPPER_SCRIPT"
+echo -e "${GREEN}✓${NC} Wrapper: $WRAPPER_SCRIPT"
 
-# Create hooks.json configuration
+# Create hooks.json (or warn if exists)
 HOOKS_CONFIG="$HOME/.cursor/hooks.json"
 if [ ! -f "$HOOKS_CONFIG" ]; then
-    echo ""
-    echo "Creating hooks.json configuration..."
     cat > "$HOOKS_CONFIG" << EOF
 {
   "version": 1,
   "hooks": {
-    "sessionStart": [
-      {
-        "command": "$WRAPPER_SCRIPT",
-        "timeout": 5
-      }
-    ],
-    "sessionEnd": [
-      {
-        "command": "$WRAPPER_SCRIPT",
-        "timeout": 5
-      }
-    ],
-    "postToolUse": [
-      {
-        "command": "$WRAPPER_SCRIPT",
-        "timeout": 5
-      }
-    ],
-    "afterShellExecution": [
-      {
-        "command": "$WRAPPER_SCRIPT",
-        "timeout": 5
-      }
-    ],
-    "afterMCPExecution": [
-      {
-        "command": "$WRAPPER_SCRIPT",
-        "timeout": 5
-      }
-    ],
-    "beforeReadFile": [
-      {
-        "command": "$WRAPPER_SCRIPT",
-        "timeout": 5
-      }
-    ],
-    "afterFileEdit": [
-      {
-        "command": "$WRAPPER_SCRIPT",
-        "timeout": 5
-      }
-    ],
-    "beforeSubmitPrompt": [
-      {
-        "command": "$WRAPPER_SCRIPT",
-        "timeout": 5
-      }
-    ],
-    "subagentStart": [
-      {
-        "command": "$WRAPPER_SCRIPT",
-        "timeout": 5
-      }
-    ],
-    "subagentStop": [
-      {
-        "command": "$WRAPPER_SCRIPT",
-        "timeout": 5
-      }
-    ],
-    "stop": [
-      {
-        "command": "$WRAPPER_SCRIPT",
-        "timeout": 5
-      }
-    ]
+    "sessionStart": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}],
+    "sessionEnd": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}],
+    "preToolUse": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}],
+    "postToolUse": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}],
+    "postToolUseFailure": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}],
+    "afterShellExecution": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}],
+    "afterMCPExecution": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}],
+    "beforeReadFile": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}],
+    "afterFileEdit": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}],
+    "beforeSubmitPrompt": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}],
+    "subagentStart": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}],
+    "subagentStop": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}],
+    "stop": [{"command": "$WRAPPER_SCRIPT", "timeout": 5}]
   }
 }
 EOF
-    echo -e "${GREEN}✓${NC} Created $HOOKS_CONFIG"
+    echo -e "${GREEN}✓${NC} Hooks: $HOOKS_CONFIG"
 else
-    echo -e "${YELLOW}!${NC} hooks.json already exists at $HOOKS_CONFIG"
-    echo "   You may need to manually merge the configuration"
-fi
-
-# Copy example HTTP config for reference
-EXAMPLE_HTTP_CONFIG="$PROJECT_DIR/otel_config_http.example.json"
-if [ -f "$PROJECT_DIR/examples/otel_config_http.json" ]; then
-    cp "$PROJECT_DIR/examples/otel_config_http.json" "$EXAMPLE_HTTP_CONFIG"
-    echo ""
-    echo -e "${GREEN}✓${NC} Copied HTTP config example to $EXAMPLE_HTTP_CONFIG"
+    echo -e "${YELLOW}!${NC} hooks.json already exists — merge manually if needed"
+    echo "   $HOOKS_CONFIG"
 fi
 
 echo ""
-echo -e "${GREEN}==================================="
-echo "Setup Complete!"
-echo "===================================${NC}"
+echo -e "${GREEN}Setup complete!${NC}"
 echo ""
-echo "Next steps:"
-echo "1. Edit the configuration file to set your OTEL endpoint:"
-echo "   $CONFIG_FILE"
+echo "Restart Cursor to activate. Traces go to:"
+echo "  https://mlflow-direct.apps.rosa.jeder-evalhub.uqi3.p3.openshiftapps.com/#/experiments/$MLFLOW_EXPERIMENT_ID"
 echo ""
-echo "   The config uses standard OTEL environment variable names:"
-echo "   {"
-echo "     \"OTEL_EXPORTER_OTLP_ENDPOINT\": \"http://your-collector:4317\","
-echo "     \"OTEL_EXPORTER_OTLP_PROTOCOL\": \"grpc\","
-echo "     \"OTEL_EXPORTER_OTLP_HEADERS\": {\"authorization\": \"Bearer YOUR_TOKEN\"}"
-echo "   }"
-echo ""
-echo "2. Restart Cursor IDE to activate hooks"
-echo ""
-echo "Configuration files:"
-echo "  - Hooks: $HOOKS_CONFIG"
-echo "  - OTEL Config: $CONFIG_FILE"
-echo "  - HTTP Example: $EXAMPLE_HTTP_CONFIG"
-echo "  - Wrapper Script: $WRAPPER_SCRIPT"
-echo ""
-echo "To test manually:"
+echo "Test manually:"
 echo "  echo '{\"hook_event_name\":\"test\"}' | $WRAPPER_SCRIPT"
 echo ""
-echo "To edit config:"
-echo "  nano $CONFIG_FILE"
-echo "  # or: code $CONFIG_FILE, vim $CONFIG_FILE, etc."
-echo ""
+echo "View logs:"
+echo "  tail -f ~/.cursor/hooks/cursor_otel_hook.log"

@@ -20,12 +20,12 @@ class OTELConfig:
     headers: Optional[dict] = None
     mask_prompts: bool = True
     timeout: int = 30
-    protocol: str = "http/json"  # "grpc", "http/protobuf", or "http/json"
+    protocol: str = "http/protobuf"  # "grpc", "http/protobuf", or "http/json"
 
     @classmethod
     def from_env(cls) -> "OTELConfig":
         """Load configuration from environment variables"""
-        protocol = os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json").lower()
+        protocol = os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf").lower()
 
         # Normalize protocol values - keep http/json and http/protobuf distinct
         if protocol == "http":
@@ -63,7 +63,7 @@ class OTELConfig:
         # Support standard OTEL environment variable names in JSON
         endpoint = data.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
         service_name = data.get("OTEL_SERVICE_NAME", "tailwind-cursor")
-        protocol = data.get("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json").lower()
+        protocol = data.get("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf").lower()
         insecure = (
             str(data.get("OTEL_EXPORTER_OTLP_INSECURE", "true")).lower() == "true"
         )
